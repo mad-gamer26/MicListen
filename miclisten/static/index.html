@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1716">
+  <title>MicListen</title>
+  <link rel="stylesheet" href="/static/styles.css?v=0.2.3">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div>
+        <h1>MicListen</h1>
+        <p class="subtitle">Hear microphones and system audio from this computer, right in your browser.</p>
+      </div>
+      <div class="header-actions">
+        <button id="refresh" class="icon-button" title="Refresh devices" aria-label="Refresh devices">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
+        </button>
+        <button id="shutdown" class="shutdown-button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9M7.1 6.6a8 8 0 1 0 9.8 0"/></svg>
+          <span>Shut down</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="Device filters">
+      <label class="filter-control" for="device-filter">
+        <span>Show</span>
+        <select id="device-filter">
+          <option value="all">All</option>
+          <option id="input-option" value="input">Inputs (0)</option>
+          <option id="output-option" value="output">Outputs (0)</option>
+        </select>
+      </label>
+      <p id="connection-note">Select a device to begin listening</p>
+    </section>
+
+    <div id="notice" class="notice hidden" role="alert"></div>
+    <section id="devices" class="device-grid"></section>
+
+    <template id="device-template">
+      <article class="device-card">
+        <div class="device-head">
+          <div class="device-icon" aria-hidden="true"></div>
+          <div class="device-title">
+            <div class="device-name" role="heading" aria-level="3"></div>
+            <p class="status-line"><span class="status-dot" aria-hidden="true"></span><span class="status-text">Ready</span></p>
+          </div>
+          <button class="listen-button" type="button" aria-label="Start listening">
+            <svg class="play" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg>
+            <svg class="stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+        </div>
+        <div class="volume-row">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4zM15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg>
+          <input class="volume" type="range" min="0" max="1.5" step="0.01" value="1" aria-label="Volume">
+          <span class="volume-text">100%</span>
+        </div>
+      </article>
+    </template>
+  </main>
+
+  <script type="module" src="/static/app.js?v=0.5.1"></script>
+</body>
+</html>
