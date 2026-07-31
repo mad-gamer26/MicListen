@@ -19,19 +19,20 @@ def _log_path() -> Path:
     return Path.home() / ".local" / "state" / "miclisten" / "miclisten.log"
 
 
+def _server_command(host: str, port: int) -> list[str]:
+    """Return the command used to start a detached server process."""
+    command = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        command.extend(["-m", "miclisten"])
+    command.extend(["--host", host, "--port", str(port)])
+    return command
+
+
 def launch_background(host: str, port: int) -> tuple[int, Path]:
     """Start a detached MicListen child and return its PID and log path."""
     log_path = _log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable,
-        "-m",
-        "miclisten",
-        "--host",
-        host,
-        "--port",
-        str(port),
-    ]
+    command = _server_command(host, port)
     options: dict = {
         "stdin": subprocess.DEVNULL,
         "stderr": subprocess.STDOUT,

@@ -125,6 +125,27 @@ python -m pip install -e ".[test]"
 pytest
 ```
 
+## Windows executable and installer
+
+Install the project dependencies, PyInstaller, and Inno Setup 6, then run:
+
+```powershell
+py -m PyInstaller --clean --noconfirm packaging\MicListen.spec
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\MicListen.iss
+```
+
+The standalone executable is written to `dist\MicListen.exe`, and the installer
+is written to `dist\installer`. The installer is deliberately per-user: it
+installs below `%LOCALAPPDATA%\Programs`, cannot be switched to an all-users
+installation, creates only a Start Menu shortcut, and never launches MicListen.
+It adds the installation directory to the current user's `PATH` and removes
+only that entry when MicListen is uninstalled.
+
+The `Build Windows installer` GitHub Actions workflow repeats this build for
+pull requests, pushes to `main`, version tags, and manual runs. Pushing a tag
+that matches the project version, such as `v0.5.2`, creates a GitHub Release
+with generated release notes and attaches both the executable and installer.
+
 The HTTP API is available at `/docs`. Live PCM uses
 `/ws/audio/{device_id}`: the server first sends a JSON format message and then
 binary interleaved little-endian 16-bit PCM frames. The native mobile playback
