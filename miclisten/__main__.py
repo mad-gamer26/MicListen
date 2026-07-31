@@ -28,6 +28,14 @@ def _server_command(host: str, port: int) -> list[str]:
     return command
 
 
+def _server_environment() -> dict[str, str]:
+    """Return an environment suitable for an independent server process."""
+    environment = os.environ.copy()
+    if getattr(sys, "frozen", False):
+        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
+
+
 def launch_background(host: str, port: int) -> tuple[int, Path]:
     """Start a detached MicListen child and return its PID and log path."""
     log_path = _log_path()
@@ -37,6 +45,7 @@ def launch_background(host: str, port: int) -> tuple[int, Path]:
         "stdin": subprocess.DEVNULL,
         "stderr": subprocess.STDOUT,
         "close_fds": True,
+        "env": _server_environment(),
     }
     if sys.platform == "win32":
         options["creationflags"] = (

@@ -55,7 +55,11 @@ jobs:
         run: |
           $port = 18765
           $log = Join-Path $env:LOCALAPPDATA "MicListen\miclisten.log"
+          $env:PYINSTALLER_STRICT_UNPACK_MODE = "1"
           & dist\MicListen.exe --host localhost --port $port --background
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged background launcher exited with code $LASTEXITCODE."
+          }
 
           $health = $null
           for ($attempt = 0; $attempt -lt 60 -and $null -eq $health; $attempt++) {
