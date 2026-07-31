@@ -1,6 +1,6 @@
 #define AppName "MicListen"
 #ifndef AppVersion
-#define AppVersion "0.5.2"
+#define AppVersion "0.5.3"
 #endif
 #define AppPublisher "mad-gamer26"
 #define AppExeName "MicListen.exe"

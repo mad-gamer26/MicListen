@@ -50,6 +50,45 @@ jobs:
         shell: pwsh
         run: python -m PyInstaller --clean --noconfirm packaging\MicListen.spec
 
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          $port = 18765
+          $log = Join-Path $env:LOCALAPPDATA "MicListen\miclisten.log"
+          & dist\MicListen.exe --host localhost --port $port --background
+
+          $health = $null
+          for ($attempt = 0; $attempt -lt 60 -and $null -eq $health; $attempt++) {
+            try {
+              $health = Invoke-RestMethod -Uri "http://localhost:$port/api/health" -TimeoutSec 1
+            }
+            catch {
+              Start-Sleep -Milliseconds 250
+            }
+          }
+
+          if ($null -eq $health) {
+            if (Test-Path -LiteralPath $log) {
+              Get-Content -LiteralPath $log -Tail 200
+            }
+            throw 'Packaged MicListen failed to start using a hostname.'
+          }
+
+          try {
+            if ($health.version -ne '${{ steps.version.outputs.value }}') {
+              throw "Packaged version $($health.version) does not match the project version."
+            }
+            if ($health.audio_error -match '_portaudiowpatch') {
+              throw "Packaged audio extension is missing: $($health.audio_error)"
+            }
+          }
+          finally {
+            Invoke-RestMethod -Method Post `
+              -Uri "http://localhost:$port/api/shutdown" `
+              -Headers @{ Origin = "http://localhost:$port" } `
+              -TimeoutSec 2
+          }
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress --yes

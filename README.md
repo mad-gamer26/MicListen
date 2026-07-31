@@ -143,7 +143,7 @@ only that entry when MicListen is uninstalled.
 
 The `Build Windows installer` GitHub Actions workflow repeats this build for
 pull requests, pushes to `main`, version tags, and manual runs. Pushing a tag
-that matches the project version, such as `v0.5.2`, creates a GitHub Release
+that matches the project version, such as `v0.5.3`, creates a GitHub Release
 with generated release notes and attaches both the executable and installer.
 
 The HTTP API is available at `/docs`. Live PCM uses

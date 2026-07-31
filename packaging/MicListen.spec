@@ -19,6 +19,8 @@ analysis = Analysis(
         *pyaudio_datas,
     ],
     hiddenimports=[
+        "_portaudiowpatch",
+        "encodings.idna",
         *pyaudio_hiddenimports,
         *collect_submodules("uvicorn"),
     ],
