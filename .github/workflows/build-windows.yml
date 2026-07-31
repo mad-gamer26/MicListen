@@ -125,6 +125,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           APP_VERSION: ${{ needs.build.outputs.app-version }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
