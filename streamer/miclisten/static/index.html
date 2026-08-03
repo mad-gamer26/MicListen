@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a1716">
   <title>MicListen</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.2.3">
+  <link rel="stylesheet" href="static/styles.css?v=0.2.3">
 </head>
 <body>
   <main>
@@ -42,6 +42,7 @@
 
     <div id="notice" class="notice hidden" role="alert"></div>
     <section id="devices" class="device-grid"></section>
+    <p class="version">Version {{MICLISTEN_VERSION}}</p>
 
     <template id="device-template">
       <article class="device-card">
@@ -65,6 +66,6 @@
     </template>
   </main>
 
-  <script type="module" src="/static/app.js?v=0.5.1"></script>
+  <script type="module" src="static/app.js?v=0.5.1"></script>
 </body>
 </html>

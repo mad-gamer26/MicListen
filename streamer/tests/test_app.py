@@ -5,8 +5,15 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from miclisten.app import app, audio_manager, native_audio_stream, set_shutdown_handler
+from miclisten.app import (
+    app,
+    audio_manager,
+    configure_authentication,
+    native_audio_stream,
+    set_shutdown_handler,
+)
 from miclisten.audio import DeviceInfo
+from miclisten.config import hash_password
 
 
 def test_index_and_device_api(monkeypatch):
@@ -40,10 +47,14 @@ def test_index_and_device_api(monkeypatch):
         assert '<option value="all">All</option>' in response.text
         assert "default-badge" not in response.text
         assert "device-meta" not in response.text
+        assert "Version 0.6" in response.text
+        assert 'href="static/styles.css' in response.text
+        assert 'href="/static/styles.css' not in response.text
 
         response = client.get("/static/app.js")
         assert response.status_code == 200
         assert "createLegacyPCMPlayer" in response.text
+        assert 'fetch("api/devices"' in response.text
         assert "Are you sure you wish to shut down MicListen?" in response.text
 
         response = client.get("/api/devices")
@@ -114,3 +125,31 @@ def test_native_stream_starts_with_mp3_bytes(monkeypatch):
     assert isinstance(first, bytes)
     assert first[0] == 0xFF and first[1] & 0xE0 == 0xE0
     assert unsubscribed is True
+
+
+def test_password_protects_interface_and_api(monkeypatch):
+    monkeypatch.setattr(audio_manager, "start", lambda: None)
+    monkeypatch.setattr(audio_manager, "list_devices", lambda: [])
+
+    async def close():
+        pass
+
+    monkeypatch.setattr(audio_manager, "close", close)
+    configure_authentication(hash_password("stream secret"))
+    try:
+        with TestClient(app) as client:
+            response = client.get("/", follow_redirects=False)
+            assert response.status_code == 303
+            assert response.headers["location"].startswith("/login")
+
+            response = client.get("/api/devices")
+            assert response.status_code == 401
+
+            response = client.post(
+                "/login", data={"password": "stream secret", "next": "/"},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert client.get("/api/devices").status_code == 200
+    finally:
+        configure_authentication("")
