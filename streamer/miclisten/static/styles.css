@@ -86,6 +86,7 @@ button { font: inherit; }
 .hidden { display: none !important; }
 .empty { grid-column: 1 / -1; padding: 60px 20px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 16px; }
 .native-audio { position: fixed; width: 1px; height: 1px; opacity: .001; pointer-events: none; left: 0; bottom: 0; }
+.version { margin: 28px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
 
 @media (max-width: 700px) {
   main { width: min(100% - 24px, 1080px); padding-top: 30px; }

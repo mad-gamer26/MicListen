@@ -7,6 +7,7 @@ const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 let devices = [];
 let filter = "all";
+const appPath = new URL(".", window.location.href).pathname.replace(/\/$/, "");
 
 const icons = {
   input: `<svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>`,
@@ -26,7 +27,7 @@ async function loadDevices() {
   clearError();
   devicesElement.innerHTML = `<div class="empty">Finding audio devices…</div>`;
   try {
-    const response = await fetch("/api/devices", { cache: "no-store" });
+    const response = await fetch("api/devices", { cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || "Could not load audio devices");
     devices = body.devices;
@@ -130,7 +131,7 @@ async function toggle(device, card) {
     pendingContext = context;
     await context.resume();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${scheme}://${location.host}/ws/audio/${device.id}`);
+    const socket = new WebSocket(`${scheme}://${location.host}${appPath}/ws/audio/${device.id}`);
     socket.binaryType = "arraybuffer";
     const session = { socket, context, node: null, gain: null, volume: Number(card.querySelector(".volume").value), status: "Connecting" };
     sessions.set(device.id, session);
@@ -187,7 +188,7 @@ async function startNativeAudio(device, card) {
     audio.className = "native-audio";
     audio.preload = "none";
     audio.playsInline = true;
-    audio.src = `/stream/audio/${device.id}.mp3`;
+    audio.src = `stream/audio/${device.id}.mp3`;
     audio.volume = Math.min(Number(card.querySelector(".volume").value), 1);
 
     const session = {
@@ -314,7 +315,7 @@ async function configurePlayer(session, format) {
   let node;
 
   if (context.audioWorklet && typeof AudioWorkletNode !== "undefined") {
-    await context.audioWorklet.addModule("/static/audio-processor.js?v=0.2.1");
+    await context.audioWorklet.addModule(new URL("static/audio-processor.js?v=0.2.1", document.baseURI));
     node = new AudioWorkletNode(context, "pcm-player", {
       numberOfOutputs: 1,
       outputChannelCount: [format.channels],
@@ -443,7 +444,7 @@ async function shutDownMicListen() {
   button.disabled = true;
   button.querySelector("span").textContent = "Shutting down…";
   try {
-    const response = await fetch("/api/shutdown", { method: "POST" });
+    const response = await fetch("api/shutdown", { method: "POST" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "MicListen could not be shut down");
     [...sessions.keys()].forEach(stop);

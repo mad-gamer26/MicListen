@@ -2,20 +2,43 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
+import hmac
+import os
 from pathlib import Path
+import secrets
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .audio import AudioManager, AudioUnavailable, DeviceNotFound
+from .config import verify_password
 
 STATIC_DIR = Path(__file__).with_name("static")
 audio_manager = AudioManager()
 shutdown_handler: Callable[[], None] | None = None
+password_hash = os.environ.get("MICLISTEN_PASSWORD_HASH", "")
+session_secret = secrets.token_bytes(32)
+
+
+def configure_authentication(encoded_password: str) -> None:
+    global password_hash
+    password_hash = encoded_password
+
+
+def _session_token() -> str:
+    return hmac.new(session_secret, password_hash.encode(), hashlib.sha256).hexdigest()
+
+
+def _has_valid_session(request: Request) -> bool:
+    if not password_hash:
+        return True
+    provided = request.cookies.get("miclisten_session", "")
+    return hmac.compare_digest(provided, _session_token())
 
 
 def set_shutdown_handler(handler: Callable[[], None] | None) -> None:
@@ -34,9 +57,55 @@ app = FastAPI(title="MicListen", version=__version__, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    if not password_hash or request.url.path == "/login":
+        return await call_next(request)
+    if _has_valid_session(request):
+        return await call_next(request)
+    if request.url.path.startswith(("/api/", "/stream/")):
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    destination = quote(request.url.path, safe="/")
+    return RedirectResponse(f"/login?next={destination}", status_code=303)
+
+
+@app.get("/login", include_in_schema=False)
+async def login_page(next: str = "/") -> HTMLResponse:
+    safe_next = next if next.startswith("/") and not next.startswith("//") else "/"
+    return HTMLResponse(
+        """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>MicListen login</title>
+<style>body{font:16px system-ui;background:#081312;color:#eef8f4;display:grid;place-items:center;min-height:100vh;margin:0}form{width:min(360px,calc(100% - 40px));padding:28px;background:#10211f;border:1px solid #25403b;border-radius:16px}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:12px;border-radius:9px}input{background:#081312;color:white;border:1px solid #36534d}button{border:0;background:#58e6a9;color:#062118;font-weight:700}</style></head>
+<body><form method="post"><h1>MicListen</h1><p>Enter the streamer password.</p>
+<input type="password" name="password" autofocus required><input type="hidden" name="next" value=""" + safe_next + """>
+<button type="submit">Continue</button></form></body></html>"""
+    )
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request):
+    fields = parse_qs((await request.body()).decode("utf-8", "replace"))
+    entered = fields.get("password", [""])[0]
+    destination = fields.get("next", ["/"])[0]
+    if not destination.startswith("/") or destination.startswith("//"):
+        destination = "/"
+    if not verify_password(entered, password_hash):
+        return HTMLResponse("Incorrect password. Go back and try again.", status_code=401)
+    response = RedirectResponse(destination, status_code=303)
+    response.set_cookie(
+        "miclisten_session",
+        _session_token(),
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+    )
+    return response
+
+
 @app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    content = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(content.replace("{{MICLISTEN_VERSION}}", __version__))
 
 
 @app.get("/api/devices")
@@ -54,6 +123,7 @@ async def health() -> dict:
         "status": "ok" if audio_manager.backend is not None else "degraded",
         "audio_error": audio_manager.startup_error,
         "version": __version__,
+        "authentication": bool(password_hash),
     }
 
 
@@ -118,6 +188,11 @@ async def native_audio_stream(device_id: int) -> StreamingResponse:
 
 @app.websocket("/ws/audio/{device_id}")
 async def audio_stream(websocket: WebSocket, device_id: int) -> None:
+    if password_hash:
+        provided = websocket.cookies.get("miclisten_session", "")
+        if not hmac.compare_digest(provided, _session_token()):
+            await websocket.close(code=4401, reason="Authentication required")
+            return
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host", "")
     if origin and urlsplit(origin).netloc.lower() != host.lower():
