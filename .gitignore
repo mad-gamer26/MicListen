@@ -5,4 +5,18 @@ __pycache__/
 .venv/
 dist/
 build/
+.DS_Store
 
+# Xcode local state
+**/*.xcodeproj/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/xcshareddata/WorkspaceSettings.xcsettings
+**/*.xcuserstate
+
+# Apple signing/private export files
+*.mobileprovision
+*.provisionprofile
+*.cer
+*.p12
+*.developerprofile
+ExportOptions.plist
