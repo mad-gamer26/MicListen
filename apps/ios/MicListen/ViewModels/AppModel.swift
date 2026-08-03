@@ -1,10 +1,22 @@
 import Combine
 import Foundation
 
+struct EndpointOpenRequest: Equatable {
+    let endpointID: UUID
+    let nonce = UUID()
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var endpoints: [SavedEndpoint]
-    @Published var selectedEndpointID: UUID?
+    @Published var selectedEndpointID: UUID? {
+        didSet {
+            if selectedEndpointID == nil, let oldValue {
+                playback.stopAll(forEndpoint: oldValue)
+            }
+        }
+    }
+    @Published private(set) var endpointOpenRequest: EndpointOpenRequest?
     @Published private(set) var states: [UUID: EndpointLoadState] = [:]
     @Published var alert: AppAlert?
 
@@ -18,7 +30,7 @@ final class AppModel: ObservableObject {
         self.store = store
         self.client = client
         self.endpoints = store.endpoints
-        self.selectedEndpointID = store.endpoints.first?.id
+        self.selectedEndpointID = nil
     }
 
     func state(for endpointID: UUID) -> EndpointLoadState {
@@ -30,6 +42,15 @@ final class AppModel: ObservableObject {
             return nil
         }
         return endpoints.first { $0.id == id }
+    }
+
+    func openEndpoint(_ endpointID: UUID) {
+        selectedEndpointID = endpointID
+        endpointOpenRequest = EndpointOpenRequest(endpointID: endpointID)
+    }
+
+    func closeSelectedEndpoint() {
+        selectedEndpointID = nil
     }
 
     func refreshAllIfNeeded() async {
@@ -127,7 +148,7 @@ final class AppModel: ObservableObject {
     func addEndpoint(name: String, urlText: String, password: String) async -> Bool {
         do {
             let normalized = try client.normalizedURL(from: urlText)
-            var endpoint = SavedEndpoint(
+            let endpoint = SavedEndpoint(
                 name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                 baseURLString: normalized.absoluteString
             )
@@ -135,14 +156,8 @@ final class AppModel: ObservableObject {
             if !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try store.setEndpointPassword(password, for: endpoint.id)
             }
-            reloadFromStore(selecting: endpoint.id)
-            await refresh(endpointID: endpoint.id)
-
-            if case .ready = state(for: endpoint.id).status {
-                return true
-            }
-            endpoint = self.endpoint(id: endpoint.id) ?? endpoint
-            return state(for: endpoint.id).status != .failed
+            reloadFromStore(selecting: nil)
+            return true
         } catch {
             alert = AppAlert(title: "Endpoint Not Added", message: error.localizedDescription)
             return false
@@ -160,8 +175,8 @@ final class AppModel: ObservableObject {
             if let password {
                 try store.setEndpointPassword(password, for: endpoint.id)
             }
-            reloadFromStore(selecting: endpoint.id)
-            await refresh(endpointID: endpoint.id)
+            states.removeValue(forKey: endpoint.id)
+            reloadFromStore(selecting: nil)
             return true
         } catch {
             alert = AppAlert(title: "Endpoint Not Updated", message: error.localizedDescription)
@@ -173,7 +188,7 @@ final class AppModel: ObservableObject {
         playback.stopAll(forEndpoint: endpoint.id)
         store.delete(endpoint)
         states.removeValue(forKey: endpoint.id)
-        reloadFromStore(selecting: endpoints.first?.id)
+        reloadFromStore(selecting: selectedEndpointID == endpoint.id ? nil : selectedEndpointID)
     }
 
     func endpointPasswordRequest(for endpoint: SavedEndpoint) -> PasswordRequest {
@@ -313,7 +328,7 @@ final class AppModel: ObservableObject {
 
     private func replaceEndpoint(_ endpoint: SavedEndpoint) {
         store.upsert(endpoint)
-        reloadFromStore(selecting: selectedEndpointID ?? endpoint.id)
+        reloadFromStore(selecting: selectedEndpointID)
     }
 
     private func reloadFromStore(selecting selection: UUID?) {
@@ -321,7 +336,7 @@ final class AppModel: ObservableObject {
         if let selection, endpoints.contains(where: { $0.id == selection }) {
             selectedEndpointID = selection
         } else {
-            selectedEndpointID = endpoints.first?.id
+            selectedEndpointID = nil
         }
     }
 }

@@ -34,6 +34,7 @@ enum MicListenError: LocalizedError {
 
 final class MicListenClient {
     private let session: URLSession
+    private let webSocketSession: URLSession
     private let cookieStorage: HTTPCookieStorage
     private let decoder = JSONDecoder()
 
@@ -48,6 +49,15 @@ final class MicListenClient {
         configuration.timeoutIntervalForRequest = 12
         configuration.timeoutIntervalForResource = 20
         self.session = URLSession(configuration: configuration)
+
+        let webSocketConfiguration = URLSessionConfiguration.default
+        webSocketConfiguration.httpCookieAcceptPolicy = .always
+        webSocketConfiguration.httpCookieStorage = cookieStorage
+        webSocketConfiguration.httpShouldSetCookies = true
+        webSocketConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        webSocketConfiguration.timeoutIntervalForRequest = 12
+        webSocketConfiguration.timeoutIntervalForResource = 60 * 60 * 24
+        self.webSocketSession = URLSession(configuration: webSocketConfiguration)
     }
 
     func normalizedURL(from text: String) throws -> URL {
@@ -155,8 +165,15 @@ final class MicListenClient {
         return parseRelayLinks(html: html, baseURL: baseURL)
     }
 
-    func streamURL(baseURL: URL, deviceID: Int) -> URL {
-        baseURL.miclistenAppending("stream/audio/\(deviceID).mp3")
+    func audioWebSocketTask(baseURL: URL, deviceID: Int) -> URLSessionWebSocketTask {
+        let httpURL = baseURL.miclistenAppending("ws/audio/\(deviceID)")
+        let url = audioWebSocketURL(from: httpURL)
+        var request = URLRequest(url: url)
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        if let cookieHeader = cookieHeader(for: httpURL) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        return webSocketSession.webSocketTask(with: request)
     }
 
     func cookieHeader(for url: URL) -> String? {
@@ -296,6 +313,19 @@ final class MicListenClient {
         default:
             return error.localizedDescription
         }
+    }
+
+    private func audioWebSocketURL(from httpURL: URL) -> URL {
+        guard var components = URLComponents(url: httpURL, resolvingAgainstBaseURL: false) else {
+            return httpURL
+        }
+        switch components.scheme?.lowercased() {
+        case "https":
+            components.scheme = "wss"
+        default:
+            components.scheme = "ws"
+        }
+        return components.url ?? httpURL
     }
 }
 

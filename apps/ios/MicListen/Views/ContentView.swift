@@ -3,9 +3,10 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingAddEndpoint = false
+    @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
             EndpointSidebarView(showingAddEndpoint: $showingAddEndpoint)
         } detail: {
             if let endpoint = model.endpoint(id: model.selectedEndpointID) {
@@ -28,8 +29,22 @@ struct ContentView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
-        .task {
-            await model.refreshAllIfNeeded()
+        .onChange(of: model.selectedEndpointID) { _, endpointID in
+            guard let endpointID else {
+                return
+            }
+            preferredCompactColumn = .detail
+            guard model.state(for: endpointID).status == .idle else {
+                return
+            }
+            Task {
+                await model.refresh(endpointID: endpointID)
+            }
+        }
+        .onChange(of: preferredCompactColumn) { _, column in
+            if column == .sidebar, model.selectedEndpointID != nil {
+                model.closeSelectedEndpoint()
+            }
         }
     }
 }

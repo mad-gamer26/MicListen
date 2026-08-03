@@ -24,6 +24,7 @@ struct StreamerInterfaceView: View {
     let fallbackTarget: StreamerTarget
     let refreshAction: () -> Void
     let passwordAction: () -> Void
+    var relayBackAction: (() -> Void)?
 
     @State private var filter: DeviceKindFilter = .all
 
@@ -74,6 +75,17 @@ struct StreamerInterfaceView: View {
         }
         .navigationTitle(target.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(relayBackAction != nil)
+        .toolbar {
+            if let relayBackAction {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: relayBackAction) {
+                        Label("Streamers", systemImage: "chevron.left")
+                    }
+                    .accessibilityLabel("Back to streamers")
+                }
+            }
+        }
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(WebTheme.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)

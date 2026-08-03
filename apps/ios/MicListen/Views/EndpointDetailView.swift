@@ -5,9 +5,8 @@ struct EndpointDetailView: View {
 
     let endpoint: SavedEndpoint
 
-    @State private var editEndpoint: SavedEndpoint?
     @State private var passwordRequest: PasswordRequest?
-    @State private var confirmingDelete = false
+    @State private var selectedStreamerID: String?
 
     var body: some View {
         let currentEndpoint = model.endpoint(id: endpoint.id) ?? endpoint
@@ -28,35 +27,19 @@ struct EndpointDetailView: View {
                             .accessibilityHidden(true)
                     }
                     .accessibilityLabel("Refresh")
-
-                    Button {
-                        editEndpoint = currentEndpoint
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .accessibilityHidden(true)
-                    }
-                    .accessibilityLabel("Edit")
-
-                    Button(role: .destructive) {
-                        confirmingDelete = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .accessibilityHidden(true)
-                    }
-                    .accessibilityLabel("Delete")
                 }
-            }
-            .sheet(item: $editEndpoint) { endpoint in
-                EditEndpointView(endpoint: endpoint)
             }
             .sheet(item: $passwordRequest) { request in
                 PasswordPromptView(request: request)
             }
-            .confirmationDialog("Delete Endpoint", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) {
-                    model.deleteEndpoint(currentEndpoint)
+            .onChange(of: endpoint.id) { _, _ in
+                selectedStreamerID = nil
+            }
+            .onChange(of: model.endpointOpenRequest) { _, request in
+                guard request?.endpointID == endpoint.id else {
+                    return
                 }
-                Button("Cancel", role: .cancel) {}
+                selectedStreamerID = nil
             }
     }
 
@@ -64,12 +47,32 @@ struct EndpointDetailView: View {
     private func content(endpoint: SavedEndpoint, state: EndpointLoadState) -> some View {
         if let resolution = state.resolution, state.status == .ready || state.status == .loading {
             if resolution.kind == .relay {
-                RelayInterfaceView(
-                    endpoint: endpoint,
-                    resolution: resolution,
-                    isRefreshing: state.isLoading,
-                    passwordRequest: $passwordRequest
-                )
+                if let selectedStreamerID,
+                   let target = resolution.targets.first(where: { $0.id == selectedStreamerID }) {
+                    StreamerInterfaceView(
+                        endpoint: endpoint,
+                        targetID: target.id,
+                        fallbackTarget: target,
+                        refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                        passwordAction: {
+                            passwordRequest = PasswordRequest(
+                                title: "Streamer Password",
+                                message: target.displayName,
+                                scope: .streamer(endpointID: endpoint.id, name: target.name)
+                            )
+                        },
+                        relayBackAction: { self.selectedStreamerID = nil }
+                    )
+                } else {
+                    RelayInterfaceView(
+                        endpoint: endpoint,
+                        resolution: resolution,
+                        isRefreshing: state.isLoading,
+                        passwordRequest: $passwordRequest
+                    ) { target in
+                        selectedStreamerID = target.id
+                    }
+                }
             } else if let target = resolution.targets.first {
                 StreamerInterfaceView(
                     endpoint: endpoint,
@@ -139,6 +142,7 @@ private struct RelayInterfaceView: View {
     let resolution: EndpointResolution
     let isRefreshing: Bool
     @Binding var passwordRequest: PasswordRequest?
+    let selectTarget: (StreamerTarget) -> Void
 
     var body: some View {
         WebPage {
@@ -173,6 +177,8 @@ private struct RelayInterfaceView: View {
                                 message: target.displayName,
                                 scope: .streamer(endpointID: endpoint.id, name: target.name)
                             )
+                        } selectAction: {
+                            selectTarget(target)
                         }
                     }
                 }
@@ -236,6 +242,7 @@ private struct RelayStreamerCard: View {
     let endpoint: SavedEndpoint
     let target: StreamerTarget
     let passwordAction: () -> Void
+    let selectAction: () -> Void
 
     var body: some View {
         if target.requiresPassword {
@@ -250,15 +257,7 @@ private struct RelayStreamerCard: View {
                 .accessibilityLabel(target.displayName)
                 .accessibilityValue(target.problem ?? "Unavailable")
         } else {
-            NavigationLink {
-                StreamerInterfaceView(
-                    endpoint: endpoint,
-                    targetID: target.id,
-                    fallbackTarget: target,
-                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
-                    passwordAction: passwordAction
-                )
-            } label: {
+            Button(action: selectAction) {
                 cardContent(icon: "desktopcomputer.and.macbook", status: target.statusText, statusColor: WebTheme.accent)
             }
             .buttonStyle(.plain)
