@@ -13,254 +13,370 @@ struct EndpointDetailView: View {
         let currentEndpoint = model.endpoint(id: endpoint.id) ?? endpoint
         let state = model.state(for: endpoint.id)
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                EndpointHeader(endpoint: currentEndpoint, state: state) {
-                    Task { await model.refresh(endpointID: currentEndpoint.id) }
-                } passwordAction: {
-                    passwordRequest = model.endpointPasswordRequest(for: currentEndpoint)
-                }
+        content(endpoint: currentEndpoint, state: state)
+            .navigationTitle(currentEndpoint.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(WebTheme.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        Task { await model.refresh(endpointID: currentEndpoint.id) }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .accessibilityHidden(true)
+                    }
+                    .accessibilityLabel("Refresh")
 
-                content(endpoint: currentEndpoint, state: state)
-            }
-            .padding()
-            .frame(maxWidth: 920, alignment: .leading)
-        }
-        .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle(currentEndpoint.displayName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    Task { await model.refresh(endpointID: currentEndpoint.id) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .accessibilityLabel("Refresh")
+                    Button {
+                        editEndpoint = currentEndpoint
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .accessibilityHidden(true)
+                    }
+                    .accessibilityLabel("Edit")
 
-                Button {
-                    editEndpoint = currentEndpoint
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
+                    Button(role: .destructive) {
+                        confirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .accessibilityHidden(true)
+                    }
+                    .accessibilityLabel("Delete")
                 }
-                .accessibilityLabel("Edit")
-
-                Button(role: .destructive) {
-                    confirmingDelete = true
-                } label: {
-                    Image(systemName: "trash")
+            }
+            .sheet(item: $editEndpoint) { endpoint in
+                EditEndpointView(endpoint: endpoint)
+            }
+            .sheet(item: $passwordRequest) { request in
+                PasswordPromptView(request: request)
+            }
+            .confirmationDialog("Delete Endpoint", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    model.deleteEndpoint(currentEndpoint)
                 }
-                .accessibilityLabel("Delete")
+                Button("Cancel", role: .cancel) {}
             }
-        }
-        .sheet(item: $editEndpoint) { endpoint in
-            EditEndpointView(endpoint: endpoint)
-        }
-        .sheet(item: $passwordRequest) { request in
-            PasswordPromptView(request: request)
-        }
-        .confirmationDialog("Delete Endpoint", isPresented: $confirmingDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                model.deleteEndpoint(currentEndpoint)
-            }
-            Button("Cancel", role: .cancel) {}
-        }
     }
 
     @ViewBuilder
     private func content(endpoint: SavedEndpoint, state: EndpointLoadState) -> some View {
         if let resolution = state.resolution, state.status == .ready || state.status == .loading {
-            EndpointResolutionView(
-                endpoint: endpoint,
-                resolution: resolution,
-                passwordRequest: $passwordRequest
-            )
+            if resolution.kind == .relay {
+                RelayInterfaceView(
+                    endpoint: endpoint,
+                    resolution: resolution,
+                    isRefreshing: state.isLoading,
+                    passwordRequest: $passwordRequest
+                )
+            } else if let target = resolution.targets.first {
+                StreamerInterfaceView(
+                    endpoint: endpoint,
+                    targetID: target.id,
+                    fallbackTarget: target,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: { passwordRequest = model.endpointPasswordRequest(for: endpoint) }
+                )
+            } else {
+                EndpointStatePage(
+                    title: "MicListen",
+                    subtitle: "Hear microphones and system audio from this computer, right in your browser.",
+                    message: "No audio devices available",
+                    state: .empty,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: { passwordRequest = model.endpointPasswordRequest(for: endpoint) }
+                )
+            }
         } else {
             switch state.status {
             case .idle, .loading:
-                ProgressBlock(title: "Checking Endpoint")
+                EndpointStatePage(
+                    title: endpoint.lastResolvedKind == .relay ? "MicListen Relay" : "MicListen",
+                    subtitle: endpoint.lastResolvedKind == .relay ? "Select a connected streamer." : "Hear microphones and system audio from this computer, right in your browser.",
+                    message: "Checking endpoint",
+                    state: .loading,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: { passwordRequest = model.endpointPasswordRequest(for: endpoint) }
+                )
             case .needsPassword:
-                ProblemBlock(
-                    title: "Password Required",
+                EndpointStatePage(
+                    title: endpoint.lastResolvedKind == .relay || state.message?.lowercased().contains("relay") == true ? "MicListen Relay" : "MicListen",
+                    subtitle: endpoint.lastResolvedKind == .relay || state.message?.lowercased().contains("relay") == true ? "Select a connected streamer." : "Hear microphones and system audio from this computer, right in your browser.",
                     message: state.message ?? "MicListen requires a password.",
-                    systemImage: "lock.fill",
-                    actionTitle: "Enter Password"
-                ) {
-                    passwordRequest = model.endpointPasswordRequest(for: endpoint)
-                }
-                .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    state: .locked,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: { passwordRequest = model.endpointPasswordRequest(for: endpoint) }
+                )
             case .failed:
-                ProblemBlock(
-                    title: "Endpoint Unavailable",
+                EndpointStatePage(
+                    title: endpoint.lastResolvedKind == .relay ? "MicListen Relay" : "MicListen",
+                    subtitle: endpoint.lastResolvedKind == .relay ? "Select a connected streamer." : "Hear microphones and system audio from this computer, right in your browser.",
                     message: state.message ?? "The endpoint could not be reached.",
-                    systemImage: "exclamationmark.triangle.fill",
-                    actionTitle: "Retry"
-                ) {
-                    Task { await model.refresh(endpointID: endpoint.id) }
-                }
-                .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    state: .failed,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: { passwordRequest = model.endpointPasswordRequest(for: endpoint) }
+                )
             case .ready:
-                EmptyView()
+                EndpointStatePage(
+                    title: "MicListen",
+                    subtitle: "Hear microphones and system audio from this computer, right in your browser.",
+                    message: "No audio devices available",
+                    state: .empty,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: { passwordRequest = model.endpointPasswordRequest(for: endpoint) }
+                )
             }
         }
     }
 }
 
-private struct EndpointHeader: View {
+private struct RelayInterfaceView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     let endpoint: SavedEndpoint
-    let state: EndpointLoadState
+    let resolution: EndpointResolution
+    let isRefreshing: Bool
+    @Binding var passwordRequest: PasswordRequest?
+
+    var body: some View {
+        WebPage {
+            WebHero(title: "MicListen Relay", subtitle: "Select a connected streamer.") {
+                HStack(spacing: 9) {
+                    WebIconButton(systemImage: "arrow.clockwise", title: "Refresh streamers") {
+                        Task { await model.refresh(endpointID: endpoint.id) }
+                    }
+                    WebActionButton("Password", systemImage: "key") {
+                        passwordRequest = model.endpointPasswordRequest(for: endpoint)
+                    }
+                }
+            }
+
+            RelayToolbar(count: resolution.targets.count, isRefreshing: isRefreshing)
+                .padding(.top, 30)
+                .padding(.bottom, 20)
+
+            if let message = resolution.message {
+                WebNotice(message: message)
+                    .padding(.bottom, 18)
+            }
+
+            if resolution.targets.isEmpty {
+                WebEmptyState("No streamers are currently connected.")
+            } else {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                    ForEach(resolution.targets) { target in
+                        RelayStreamerCard(endpoint: endpoint, target: target) {
+                            passwordRequest = PasswordRequest(
+                                title: "Streamer Password",
+                                message: target.displayName,
+                                scope: .streamer(endpointID: endpoint.id, name: target.name)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Text("Version \(resolution.health.version ?? "unknown")")
+                .font(.system(size: 12))
+                .foregroundStyle(WebTheme.muted)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 28)
+        }
+    }
+
+    private var columns: [GridItem] {
+        let count = horizontalSizeClass == .compact ? 1 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: count)
+    }
+}
+
+private struct RelayToolbar: View {
+    let count: Int
+    let isRefreshing: Bool
+
+    var body: some View {
+        HStack(spacing: 16) {
+            HStack(spacing: 9) {
+                Text("Show")
+                    .font(.system(size: 13))
+                    .foregroundStyle(WebTheme.muted)
+                Text("Connected")
+                    .font(.system(size: 15))
+                    .foregroundStyle(WebTheme.text)
+                    .frame(minWidth: 148, minHeight: 39)
+                    .background(WebTheme.panel, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(WebTheme.line, lineWidth: 1)
+                    )
+            }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 8) {
+                if isRefreshing {
+                    ProgressView()
+                        .tint(WebTheme.accent)
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+                Text(count == 0 ? "No streamers connected" : "\(count) streamer\(count == 1 ? "" : "s") connected")
+                    .font(.system(size: 13))
+                    .foregroundStyle(WebTheme.muted)
+            }
+        }
+    }
+}
+
+private struct RelayStreamerCard: View {
+    @EnvironmentObject private var model: AppModel
+
+    let endpoint: SavedEndpoint
+    let target: StreamerTarget
+    let passwordAction: () -> Void
+
+    var body: some View {
+        if target.requiresPassword {
+            Button(action: passwordAction) {
+                cardContent(icon: "lock.fill", status: "Locked", statusColor: .orange)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Enter password for \(target.displayName)")
+        } else if target.problem != nil {
+            cardContent(icon: "exclamationmark.triangle.fill", status: "Unavailable", statusColor: WebTheme.danger)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(target.displayName)
+                .accessibilityValue(target.problem ?? "Unavailable")
+        } else {
+            NavigationLink {
+                StreamerInterfaceView(
+                    endpoint: endpoint,
+                    targetID: target.id,
+                    fallbackTarget: target,
+                    refreshAction: { Task { await model.refresh(endpointID: endpoint.id) } },
+                    passwordAction: passwordAction
+                )
+            } label: {
+                cardContent(icon: "desktopcomputer.and.macbook", status: target.statusText, statusColor: WebTheme.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(target.displayName)
+            .accessibilityValue("\(target.devices.count) device\(target.devices.count == 1 ? "" : "s")")
+        }
+    }
+
+    private func cardContent(icon: String, status: String, statusColor: Color) -> some View {
+        let live = target.problem == nil && !target.requiresPassword
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 13) {
+                Image(systemName: icon)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(WebTheme.accent)
+                    .frame(width: 42, height: 42)
+                    .background(Color(red: 0.094, green: 0.220, blue: 0.188), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(target.displayName)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(WebTheme.text)
+                        .lineLimit(1)
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 7, height: 7)
+                            .shadow(color: statusColor.opacity(live ? 0.9 : 0), radius: 5)
+                        Text(status)
+                            .font(.system(size: 11))
+                            .foregroundStyle(WebTheme.muted)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: target.requiresPassword ? "key.fill" : "chevron.right")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(target.requiresPassword ? WebTheme.background : WebTheme.accent)
+                    .frame(width: 42, height: 42)
+                    .background(target.requiresPassword ? WebTheme.accent : Color.clear)
+                    .clipShape(Circle())
+                    .accessibilityHidden(true)
+            }
+
+            Text(target.problem ?? target.baseURL.absoluteString)
+                .font(.system(size: 12))
+                .foregroundStyle(WebTheme.muted)
+                .lineLimit(2)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.071, green: 0.153, blue: 0.141).opacity(0.94),
+                    Color(red: 0.051, green: 0.114, blue: 0.106).opacity(0.94)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(target.requiresPassword ? Color.orange.opacity(0.55) : WebTheme.line, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.16), radius: 18, x: 0, y: 14)
+    }
+}
+
+private struct EndpointStatePage: View {
+    enum StateKind {
+        case loading
+        case locked
+        case failed
+        case empty
+    }
+
+    let title: String
+    let subtitle: String
+    let message: String
+    let state: StateKind
     let refreshAction: () -> Void
     let passwordAction: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(kindColor.opacity(0.16))
-                    Image(systemName: kind.systemImage)
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(kindColor)
-                }
-                .frame(width: 52, height: 52)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(endpoint.displayName)
-                        .font(.title2.weight(.semibold))
-                        .lineLimit(2)
-                    Text(endpoint.baseURLString)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-
-                    HStack(spacing: 8) {
-                        StatusBadge(kind.title, systemImage: kind.systemImage, color: kindColor)
-                        StatusBadge(statusTitle, systemImage: statusImage, color: statusColor)
-                    }
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            if let resolution = state.resolution {
-                HStack(spacing: 18) {
-                    HeaderMetric(title: "Version", value: resolution.health.version ?? "Unknown")
-                    HeaderMetric(title: "Authentication", value: resolution.health.authentication == true ? "Enabled" : "Off")
-                    if resolution.kind == .relay {
-                        HeaderMetric(title: "Streamers", value: "\(resolution.health.connectedStreamers ?? resolution.targets.count)")
-                    } else {
-                        HeaderMetric(title: "Devices", value: "\(resolution.targets.first?.devices.count ?? 0)")
-                    }
-                    Spacer()
+        WebPage {
+            WebHero(title: title, subtitle: subtitle) {
+                HStack(spacing: 9) {
+                    WebIconButton(systemImage: "arrow.clockwise", title: "Refresh", action: refreshAction)
+                    WebActionButton("Password", systemImage: "key", action: passwordAction)
                 }
             }
+            .padding(.bottom, 30)
 
-            HStack(spacing: 10) {
-                Button(action: refreshAction) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+            switch state {
+            case .loading:
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .tint(WebTheme.accent)
+                    Text(message)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(WebTheme.muted)
                 }
-                .buttonStyle(.bordered)
-
-                Button(action: passwordAction) {
-                    Label("Password", systemImage: "key")
-                }
-                .buttonStyle(.bordered)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 60)
+            case .locked:
+                WebLockedState(title: "Password Required", message: message, actionTitle: "Enter Password", action: passwordAction)
+            case .failed:
+                WebNotice(message: message)
+                    .padding(.bottom, 18)
+                WebEmptyState("No audio devices available")
+            case .empty:
+                WebEmptyState(message)
             }
         }
-        .padding(16)
-        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var kind: EndpointKind {
-        state.resolution?.kind ?? endpoint.lastResolvedKind
-    }
-
-    private var kindColor: Color {
-        kind == .relay ? .indigo : (kind == .streamer ? .mint : .secondary)
-    }
-
-    private var statusTitle: String {
-        switch state.status {
-        case .idle: return "Idle"
-        case .loading: return "Refreshing"
-        case .ready: return "Online"
-        case .needsPassword: return "Locked"
-        case .failed: return "Offline"
-        }
-    }
-
-    private var statusImage: String {
-        switch state.status {
-        case .idle: return "circle"
-        case .loading: return "arrow.triangle.2.circlepath"
-        case .ready: return "checkmark.circle.fill"
-        case .needsPassword: return "lock.fill"
-        case .failed: return "xmark.octagon.fill"
-        }
-    }
-
-    private var statusColor: Color {
-        switch state.status {
-        case .idle: return .secondary
-        case .loading: return .blue
-        case .ready: return .green
-        case .needsPassword: return .orange
-        case .failed: return .red
-        }
-    }
-}
-
-private struct EndpointResolutionView: View {
-    let endpoint: SavedEndpoint
-    let resolution: EndpointResolution
-    @Binding var passwordRequest: PasswordRequest?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let message = resolution.message {
-                Text(message)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 2)
-            }
-
-            if resolution.targets.isEmpty {
-                ProblemBlock(
-                    title: resolution.kind == .relay ? "No Streamers" : "No Devices",
-                    message: resolution.kind == .relay ? "The relay is online." : "The streamer is online.",
-                    systemImage: resolution.kind == .relay ? "point.3.connected.trianglepath.dotted" : "speaker.slash",
-                    actionTitle: nil,
-                    action: nil
-                )
-                .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            } else {
-                ForEach(resolution.targets) { target in
-                    StreamerTargetView(target: target) {
-                        passwordRequest = PasswordRequest(
-                            title: "Streamer Password",
-                            message: target.displayName,
-                            scope: .streamer(endpointID: endpoint.id, name: target.name)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct ProgressBlock: View {
-    let title: String
-
-    var body: some View {
-        VStack(spacing: 14) {
-            ProgressView()
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(30)
-        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

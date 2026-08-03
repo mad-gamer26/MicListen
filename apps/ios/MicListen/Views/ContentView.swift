@@ -16,7 +16,8 @@ struct ContentView: View {
                 }
             }
         }
-        .tint(.mint)
+        .tint(WebTheme.accent)
+        .preferredColorScheme(.dark)
         .sheet(isPresented: $showingAddEndpoint) {
             AddEndpointView()
         }

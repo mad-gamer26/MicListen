@@ -24,6 +24,8 @@ struct EndpointSidebarView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(WebTheme.background)
         .navigationTitle("MicListen")
         .overlay {
             if model.endpoints.isEmpty {
@@ -40,6 +42,7 @@ struct EndpointSidebarView: View {
                     showingAddEndpoint = true
                 } label: {
                     Image(systemName: "plus")
+                        .accessibilityHidden(true)
                 }
                 .accessibilityLabel("Add Endpoint")
             }
@@ -59,16 +62,22 @@ private struct EndpointSidebarRow: View {
                 Image(systemName: kind.systemImage)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(iconColor)
+                    .accessibilityHidden(true)
             }
             .frame(width: 36, height: 36)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(WebTheme.line, lineWidth: 1)
+            )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(endpoint.displayName)
                     .font(.headline)
+                    .foregroundStyle(WebTheme.text)
                     .lineLimit(1)
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WebTheme.muted)
                     .lineLimit(1)
             }
 
@@ -77,15 +86,21 @@ private struct EndpointSidebarRow: View {
             if state.isLoading {
                 ProgressView()
                     .controlSize(.small)
+                    .accessibilityHidden(true)
             } else if state.status == .needsPassword {
                 Image(systemName: "lock.fill")
                     .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
             } else if state.status == .failed {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
+                    .accessibilityHidden(true)
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(endpoint.displayName)
+        .accessibilityValue(accessibilityValue)
     }
 
     private var kind: EndpointKind {
@@ -99,11 +114,11 @@ private struct EndpointSidebarRow: View {
         case .needsPassword:
             return .orange
         case .loading:
-            return .blue
+            return WebTheme.accent
         case .ready:
-            return kind == .relay ? .indigo : .mint
+            return kind == .relay ? WebTheme.accentDeep : WebTheme.accent
         case .idle:
-            return .secondary
+            return WebTheme.muted
         }
     }
 
@@ -118,5 +133,24 @@ private struct EndpointSidebarRow: View {
             return resolution.targets.first?.statusText ?? resolution.kind.title
         }
         return endpoint.baseURLString
+    }
+
+    private var accessibilityValue: String {
+        "\(kind.title), \(statusTitle), \(subtitle)"
+    }
+
+    private var statusTitle: String {
+        switch state.status {
+        case .idle:
+            return "Idle"
+        case .loading:
+            return "Refreshing"
+        case .ready:
+            return "Online"
+        case .needsPassword:
+            return "Password required"
+        case .failed:
+            return "Offline"
+        }
     }
 }
