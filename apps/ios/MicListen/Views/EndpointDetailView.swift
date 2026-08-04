@@ -146,17 +146,15 @@ private struct RelayInterfaceView: View {
                 }
             }
 
-            RelayToolbar(count: resolution.targets.count, isRefreshing: isRefreshing)
-                .padding(.top, 30)
-                .padding(.bottom, 20)
-
             if let message = resolution.message {
                 WebNotice(message: message)
+                    .padding(.top, 30)
                     .padding(.bottom, 18)
             }
 
             if resolution.targets.isEmpty {
                 WebEmptyState("No streamers are currently connected.")
+                    .padding(.top, 30)
             } else {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
                     ForEach(resolution.targets) { target in
@@ -184,44 +182,6 @@ private struct RelayInterfaceView: View {
     private var columns: [GridItem] {
         let count = horizontalSizeClass == .compact ? 1 : 2
         return Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: count)
-    }
-}
-
-private struct RelayToolbar: View {
-    let count: Int
-    let isRefreshing: Bool
-
-    var body: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 9) {
-                Text("Show")
-                    .font(.system(size: 13))
-                    .foregroundStyle(WebTheme.muted)
-                Text("Connected")
-                    .font(.system(size: 15))
-                    .foregroundStyle(WebTheme.text)
-                    .frame(minWidth: 148, minHeight: 39)
-                    .background(WebTheme.panel, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .stroke(WebTheme.line, lineWidth: 1)
-                    )
-            }
-
-            Spacer(minLength: 12)
-
-            HStack(spacing: 8) {
-                if isRefreshing {
-                    ProgressView()
-                        .tint(WebTheme.accent)
-                        .controlSize(.small)
-                        .accessibilityHidden(true)
-                }
-                Text(count == 0 ? "No streamers connected" : "\(count) streamer\(count == 1 ? "" : "s") connected")
-                    .font(.system(size: 13))
-                    .foregroundStyle(WebTheme.muted)
-            }
-        }
     }
 }
 

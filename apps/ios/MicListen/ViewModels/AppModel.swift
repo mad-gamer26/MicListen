@@ -140,6 +140,12 @@ final class AppModel: ObservableObject {
             }
         } catch MicListenError.authenticationRequired(let message) {
             states[endpointID] = EndpointLoadState(status: .needsPassword, resolution: current.resolution, message: message)
+        } catch MicListenError.badPassword {
+            states[endpointID] = EndpointLoadState(
+                status: .needsPassword,
+                resolution: current.resolution,
+                message: "The saved password was rejected."
+            )
         } catch {
             states[endpointID] = EndpointLoadState(status: .failed, resolution: current.resolution, message: error.localizedDescription)
         }
@@ -270,6 +276,17 @@ final class AppModel: ObservableObject {
                 devices: [],
                 requiresPassword: true,
                 problem: message
+            )
+        } catch MicListenError.badPassword {
+            return StreamerTarget(
+                endpointID: endpoint.id,
+                name: link.name,
+                baseURL: link.baseURL,
+                sourceKind: .relay,
+                health: nil,
+                devices: [],
+                requiresPassword: true,
+                problem: "The saved password was rejected."
             )
         } catch {
             return StreamerTarget(
