@@ -18,17 +18,6 @@ struct EndpointDetailView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(WebTheme.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        Task { await model.refresh(endpointID: currentEndpoint.id) }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .accessibilityHidden(true)
-                    }
-                    .accessibilityLabel("Refresh")
-                }
-            }
             .sheet(item: $passwordRequest) { request in
                 PasswordPromptView(request: request)
             }

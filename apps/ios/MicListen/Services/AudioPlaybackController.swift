@@ -55,6 +55,7 @@ struct PlaybackSession: Identifiable {
 @MainActor
 final class AudioPlaybackController: ObservableObject {
     @Published private(set) var sessions: [String: PlaybackSession] = [:]
+    @Published private var targetVolumes: [String: Double] = [:]
 
     func sessionID(target: StreamerTarget, device: AudioDevice) -> String {
         "\(target.id)|device.\(device.id)"
@@ -89,6 +90,7 @@ final class AudioPlaybackController: ObservableObject {
             volume: 1,
             message: nil
         )
+        runtime.setVolume(effectiveVolume(deviceVolume: 1, targetID: target.id))
         runtime.receiveTask = Task.detached(priority: .userInitiated) { [weak self, weak runtime] in
             guard let runtime else {
                 return
@@ -128,7 +130,7 @@ final class AudioPlaybackController: ObservableObject {
         }
         let clamped = min(max(volume, 0), 1)
         session.volume = clamped
-        session.runtime.setVolume(clamped)
+        session.runtime.setVolume(effectiveVolume(deviceVolume: clamped, targetID: session.targetID))
         sessions[sessionID] = session
     }
 
@@ -136,9 +138,26 @@ final class AudioPlaybackController: ObservableObject {
         sessions[sessionID]?.volume ?? 1
     }
 
+    func streamerVolume(target: StreamerTarget) -> Double {
+        targetVolumes[target.id] ?? 1
+    }
+
+    func setStreamerVolume(_ volume: Double, target: StreamerTarget) {
+        let clamped = min(max(volume, 0), 1)
+        targetVolumes[target.id] = clamped
+
+        for session in sessions.values where session.targetID == target.id {
+            session.runtime.setVolume(effectiveVolume(deviceVolume: session.volume, targetID: session.targetID))
+        }
+    }
+
+    private func effectiveVolume(deviceVolume: Double, targetID: String) -> Double {
+        deviceVolume * (targetVolumes[targetID] ?? 1)
+    }
+
     private func configureAudioSession() throws {
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playback, mode: .default)
+        try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try audioSession.setPreferredIOBufferDuration(0.01)
         try audioSession.setActive(true)
     }
@@ -312,9 +331,11 @@ private final class PCMStreamPlayer: @unchecked Sendable {
 
     func configure(sampleRate: Double, channels: Int, volume: Double) throws {
         let channelCount = max(1, min(channels, 2))
+        let outputSampleRate = AVAudioSession.sharedInstance().sampleRate
+        let playbackSampleRate = outputSampleRate > 0 ? outputSampleRate : sampleRate
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
+            sampleRate: playbackSampleRate,
             channels: AVAudioChannelCount(channelCount),
             interleaved: false
         ) else {
@@ -322,7 +343,11 @@ private final class PCMStreamPlayer: @unchecked Sendable {
         }
 
         let nextEngine = AVAudioEngine()
-        let nextRingBuffer = PCMFrameRingBuffer(sampleRate: sampleRate, channels: channelCount)
+        let nextRingBuffer = PCMFrameRingBuffer(
+            sourceSampleRate: sampleRate,
+            outputSampleRate: playbackSampleRate,
+            channels: channelCount
+        )
         let nextSourceNode = AVAudioSourceNode { _, _, frameCount, audioBufferList in
             nextRingBuffer.render(frameCount: Int(frameCount), to: audioBufferList)
             return noErr
@@ -375,21 +400,24 @@ private final class PCMFrameRingBuffer: @unchecked Sendable {
     private let startThreshold: Int
     private let trimThreshold: Int
     private let trimTarget: Int
+    private let ratio: Double
     private let lock = NSLock()
 
     private var buffers: [[Float]]
     private var readIndex = 0
     private var writeIndex = 0
     private var availableFrames = 0
+    private var phase = 0.0
     private var started = false
 
-    init(sampleRate: Double, channels: Int) {
-        let framesPerSecond = max(1, Int(sampleRate.rounded()))
+    init(sourceSampleRate: Double, outputSampleRate: Double, channels: Int) {
+        let framesPerSecond = max(1, Int(sourceSampleRate.rounded()))
         self.channels = max(1, channels)
         self.capacity = max(framesPerSecond * 2, 2_048)
-        self.startThreshold = max(Int(Double(framesPerSecond) * 0.08), 2)
-        self.trimThreshold = max(Int(Double(framesPerSecond) * 0.35), 2)
-        self.trimTarget = max(Int(Double(framesPerSecond) * 0.12), 2)
+        self.startThreshold = max(Int(Double(framesPerSecond) * 0.03), 2)
+        self.trimThreshold = max(Int(Double(framesPerSecond) * 0.2), 2)
+        self.trimTarget = max(Int(ceil(Double(framesPerSecond) * 0.06)), 2)
+        self.ratio = sourceSampleRate / max(outputSampleRate, 1)
         self.buffers = Array(repeating: Array(repeating: 0, count: capacity), count: self.channels)
     }
 
@@ -426,6 +454,7 @@ private final class PCMFrameRingBuffer: @unchecked Sendable {
                     let dropped = availableFrames - trimTarget
                     readIndex = (readIndex + dropped) % capacity
                     availableFrames = trimTarget
+                    phase = 0
                 }
                 if availableFrames >= startThreshold {
                     started = true
@@ -439,7 +468,10 @@ private final class PCMFrameRingBuffer: @unchecked Sendable {
         clear(outputBuffers)
 
         lock.withLock {
-            guard started, availableFrames > 0 else {
+            guard started, availableFrames >= 2 else {
+                if availableFrames < 2 {
+                    started = false
+                }
                 return
             }
 
@@ -456,21 +488,24 @@ private final class PCMFrameRingBuffer: @unchecked Sendable {
         to outputBuffers: UnsafeMutableAudioBufferListPointer
     ) {
         for frame in 0..<frameCount {
-            guard availableFrames > 0 else {
+            guard availableFrames >= 2 else {
                 started = false
                 break
             }
 
+            let nextIndex = (readIndex + 1) % capacity
             for outputIndex in 0..<outputBuffers.count {
                 guard let data = outputBuffers[outputIndex].mData else {
                     continue
                 }
                 let samples = data.assumingMemoryBound(to: Float.self)
                 let sourceChannel = min(outputIndex, channels - 1)
-                samples[frame] = buffers[sourceChannel][readIndex]
+                let current = buffers[sourceChannel][readIndex]
+                let next = buffers[sourceChannel][nextIndex]
+                samples[frame] = current + (next - current) * Float(phase)
             }
 
-            consumeFrame()
+            advancePhase()
         }
     }
 
@@ -485,25 +520,29 @@ private final class PCMFrameRingBuffer: @unchecked Sendable {
         let samples = data.assumingMemoryBound(to: Float.self)
 
         for frame in 0..<frameCount {
-            guard availableFrames > 0 else {
+            guard availableFrames >= 2 else {
                 started = false
                 break
             }
 
+            let nextIndex = (readIndex + 1) % capacity
             for outputChannel in 0..<outputChannelCount {
                 let sourceChannel = min(outputChannel, channels - 1)
-                samples[frame * outputChannelCount + outputChannel] = buffers[sourceChannel][readIndex]
+                let current = buffers[sourceChannel][readIndex]
+                let next = buffers[sourceChannel][nextIndex]
+                samples[frame * outputChannelCount + outputChannel] = current + (next - current) * Float(phase)
             }
 
-            consumeFrame()
+            advancePhase()
         }
     }
 
-    private func consumeFrame() {
-        readIndex = (readIndex + 1) % capacity
-        availableFrames -= 1
-        if availableFrames == 0 {
-            started = false
+    private func advancePhase() {
+        phase += ratio
+        while phase >= 1 && availableFrames > 1 {
+            phase -= 1
+            readIndex = (readIndex + 1) % capacity
+            availableFrames -= 1
         }
     }
 

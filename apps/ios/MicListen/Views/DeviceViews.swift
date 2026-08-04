@@ -64,6 +64,8 @@ struct StreamerInterfaceView: View {
             } else if filteredDevices(for: target).isEmpty {
                 WebEmptyState(emptyMessage(for: target))
             } else {
+                StreamerVolumeControl(target: target)
+                    .padding(.bottom, 16)
                 DeviceGrid(target: target, filter: filter)
             }
 
@@ -178,6 +180,44 @@ private struct StreamerToolbar: View {
         case .output:
             return "Outputs (\(target.devices.filter { $0.kind == "output" }.count))"
         }
+    }
+}
+
+private struct StreamerVolumeControl: View {
+    @EnvironmentObject private var playback: AudioPlaybackController
+
+    let target: StreamerTarget
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Streamer Volume")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(WebTheme.text)
+                .frame(width: 132, alignment: .leading)
+
+            Slider(
+                value: Binding(
+                    get: { playback.streamerVolume(target: target) },
+                    set: { playback.setStreamerVolume($0, target: target) }
+                ),
+                in: 0...1
+            )
+            .tint(WebTheme.accent)
+            .accessibilityLabel("Streamer Volume")
+            .accessibilityValue("\(Int(playback.streamerVolume(target: target) * 100)) percent")
+
+            Text("\(Int(playback.streamerVolume(target: target) * 100))%")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(WebTheme.muted)
+                .frame(width: 35, alignment: .trailing)
+                .accessibilityHidden(true)
+        }
+        .padding(16)
+        .background(WebTheme.panel, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(WebTheme.line, lineWidth: 1)
+        )
     }
 }
 
