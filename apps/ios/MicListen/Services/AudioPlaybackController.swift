@@ -338,11 +338,11 @@ private func micListenAudioQueueCallback(
 }
 
 private final class PCMStreamPlayer: @unchecked Sendable {
-    private static let bufferCount = 12
+    private static let bufferCount = 24
     private static let bufferDuration = 0.01
-    private static let startDelay = 0.03
-    private static let queueTargetDelay = 0.05
-    private static let resetDelay = 0.2
+    private static let startDelay = 0.1
+    private static let queueTargetDelay = 0.16
+    private static let resetDelay = 0.45
 
     private let stateQueue = DispatchQueue(label: "MicListen.PCMStreamPlayer")
     private var audioQueue: AudioQueueRef?
@@ -608,17 +608,16 @@ private final class AdaptivePCMJitterBuffer {
         static let getAvailableCount: CInt = 3
     }
 
-    private static let maximumRepeatedConcealmentFrames = 3
-
     private let jitter: OpaquePointer
     private let frameFrames: Int
     private let frameByteCount: Int
+    private let channelCount: Int
     private var inputCarry = Data()
     private var sourceTimestamp: UInt32 = 0
     private var sequence: UInt16 = 0
     private var bufferedFrames = 0
-    private var lastPlaybackFrame: Data?
-    private var repeatedConcealmentFrames = 0
+    private var lastSamples: [Int16]
+    private var missingFrameStreak = 0
 
     init(frameFrames: Int, bytesPerFrame: Int) throws {
         guard frameFrames > 0, bytesPerFrame > 0 else {
@@ -630,6 +629,9 @@ private final class AdaptivePCMJitterBuffer {
         self.jitter = jitter
         self.frameFrames = frameFrames
         self.frameByteCount = frameFrames * bytesPerFrame
+        let nextChannelCount = max(bytesPerFrame / MemoryLayout<Int16>.size, 1)
+        self.channelCount = nextChannelCount
+        self.lastSamples = Array(repeating: 0, count: nextChannelCount)
     }
 
     deinit {
@@ -682,12 +684,12 @@ private final class AdaptivePCMJitterBuffer {
 
         switch status {
         case SpeexJitter.ok:
-            repeatedConcealmentFrames = 0
+            missingFrameStreak = 0
             let frame = normalizedFrame(from: output, byteCount: returnedLength)
-            lastPlaybackFrame = frame
+            rememberLastSamples(from: frame)
             return frame
         case SpeexJitter.missing, SpeexJitter.insertion:
-            repeatedConcealmentFrames += 1
+            missingFrameStreak += 1
             return concealmentFrame()
         default:
             return nil
@@ -700,8 +702,8 @@ private final class AdaptivePCMJitterBuffer {
         sourceTimestamp = 0
         sequence = 0
         bufferedFrames = 0
-        lastPlaybackFrame = nil
-        repeatedConcealmentFrames = 0
+        lastSamples = Array(repeating: 0, count: channelCount)
+        missingFrameStreak = 0
     }
 
     private func putFrame(_ frame: Data) {
@@ -727,18 +729,52 @@ private final class AdaptivePCMJitterBuffer {
         let validByteCount = min(max(byteCount, 0), frameByteCount)
         var frame = Data(bytes.prefix(validByteCount))
         if frame.count < frameByteCount {
-            frame.append(concealmentFrame().prefix(frameByteCount - frame.count))
+            frame.append(Data(repeating: 0, count: frameByteCount - frame.count))
         }
         return frame
     }
 
     private func concealmentFrame() -> Data {
-        if repeatedConcealmentFrames <= Self.maximumRepeatedConcealmentFrames,
-           let lastPlaybackFrame,
-           lastPlaybackFrame.count == frameByteCount {
-            return lastPlaybackFrame
+        guard missingFrameStreak == 1, lastSamples.contains(where: { $0 != 0 }) else {
+            lastSamples = Array(repeating: 0, count: channelCount)
+            return Data(repeating: 0, count: frameByteCount)
         }
-        return Data(repeating: 0, count: frameByteCount)
+
+        var frame = Data(count: frameByteCount)
+        frame.withUnsafeMutableBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            for frameIndex in 0..<frameFrames {
+                let gain = Float(frameFrames - frameIndex) / Float(frameFrames)
+                for channel in 0..<channelCount {
+                    let sampleIndex = frameIndex * channelCount + channel
+                    let byteIndex = sampleIndex * MemoryLayout<Int16>.size
+                    let sample = Int16(clamping: Int(Float(lastSamples[channel]) * gain))
+                    let littleEndian = UInt16(bitPattern: sample).littleEndian
+                    bytes[byteIndex] = UInt8(truncatingIfNeeded: littleEndian)
+                    bytes[byteIndex + 1] = UInt8(truncatingIfNeeded: littleEndian >> 8)
+                }
+            }
+        }
+        lastSamples = Array(repeating: 0, count: channelCount)
+        return frame
+    }
+
+    private func rememberLastSamples(from frame: Data) {
+        let requiredSampleCount = frameFrames * channelCount
+        let bytesPerSample = MemoryLayout<Int16>.size
+        guard frame.count >= requiredSampleCount * bytesPerSample else {
+            return
+        }
+
+        frame.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            let finalFrameStart = (frameFrames - 1) * channelCount
+            for channel in 0..<channelCount {
+                let byteIndex = (finalFrameStart + channel) * bytesPerSample
+                let rawSample = UInt16(bytes[byteIndex]) | (UInt16(bytes[byteIndex + 1]) << 8)
+                lastSamples[channel] = Int16(bitPattern: UInt16(littleEndian: rawSample))
+            }
+        }
     }
 
     private func refreshBufferedFrames() {
