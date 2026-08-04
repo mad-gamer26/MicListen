@@ -19,9 +19,10 @@
 		1A200000000000000000000A /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000A /* Components.swift */; };
 		1A200000000000000000000B /* AddEndpointView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000B /* AddEndpointView.swift */; };
 		1A200000000000000000000C /* PasswordPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000C /* PasswordPromptView.swift */; };
-		1A200000000000000000000D /* EndpointDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000D /* EndpointDetailView.swift */; };
-		1A200000000000000000000E /* DeviceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000E /* DeviceViews.swift */; };
-		1A200000000000000000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000F /* Assets.xcassets */; };
+			1A200000000000000000000D /* EndpointDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000D /* EndpointDetailView.swift */; };
+			1A200000000000000000000E /* DeviceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000E /* DeviceViews.swift */; };
+			1A200000000000000000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A100000000000000000000F /* Assets.xcassets */; };
+			1A2000000000000000000010 /* speex in Frameworks */ = {isa = PBXBuildFile; productRef = 1A9000000000000000000002 /* speex */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,13 +46,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		1A6000000000000000000003 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+			1A6000000000000000000003 /* Frameworks */ = {
+				isa = PBXFrameworksBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					1A2000000000000000000010 /* speex in Frameworks */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -133,10 +135,13 @@
 			);
 			dependencies = (
 			);
-			name = MicListen;
-			productName = MicListen;
-			productReference = 1A1000000000000000000011 /* MicListen.app */;
-			productType = "com.apple.product-type.application";
+				name = MicListen;
+				packageProductDependencies = (
+					1A9000000000000000000002 /* speex */,
+				);
+				productName = MicListen;
+				productReference = 1A1000000000000000000011 /* MicListen.app */;
+				productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
@@ -161,9 +166,12 @@
 				en,
 				Base,
 			);
-			mainGroup = 1A3000000000000000000006;
-			productRefGroup = 1A3000000000000000000005 /* Products */;
-			projectDirPath = "";
+				mainGroup = 1A3000000000000000000006;
+				packageReferences = (
+					1A9000000000000000000001 /* XCRemoteSwiftPackageReference "CSpeex" */,
+				);
+				productRefGroup = 1A3000000000000000000005 /* Products */;
+				projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				1A5000000000000000000001 /* MicListen */,
@@ -388,7 +396,26 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-/* End XCConfigurationList section */
-	};
-	rootObject = 1A4000000000000000000001 /* Project object */;
-}
+	/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1A9000000000000000000001 /* XCRemoteSwiftPackageReference "CSpeex" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sbooth/CSpeex.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1A9000000000000000000002 /* speex */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A9000000000000000000001 /* XCRemoteSwiftPackageReference "CSpeex" */;
+			productName = speex;
+		};
+/* End XCSwiftPackageProductDependency section */
+		};
+		rootObject = 1A4000000000000000000001 /* Project object */;
+	}

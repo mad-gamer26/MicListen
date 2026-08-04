@@ -1,7 +1,9 @@
 import AVFoundation
+import AudioToolbox
 import Combine
 import Darwin
 import Foundation
+import speex
 
 enum PlaybackStatus: Equatable {
     case connecting
@@ -323,236 +325,426 @@ private final class AudioStreamRuntime: @unchecked Sendable {
     }
 }
 
+private func micListenAudioQueueCallback(
+    userData: UnsafeMutableRawPointer?,
+    queue: AudioQueueRef,
+    buffer: AudioQueueBufferRef
+) {
+    guard let userData else {
+        return
+    }
+    let player = Unmanaged<PCMStreamPlayer>.fromOpaque(userData).takeUnretainedValue()
+    player.reclaimBuffer(buffer)
+}
+
 private final class PCMStreamPlayer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var engine: AVAudioEngine?
-    private var sourceNode: AVAudioSourceNode?
-    private var ringBuffer: PCMFrameRingBuffer?
+    private static let bufferCount = 12
+    private static let bufferDuration = 0.01
+    private static let startDelay = 0.03
+    private static let queueTargetDelay = 0.05
+    private static let resetDelay = 0.2
+
+    private let stateQueue = DispatchQueue(label: "MicListen.PCMStreamPlayer")
+    private var audioQueue: AudioQueueRef?
+    private var allBuffers: [AudioQueueBufferRef] = []
+    private var freeBuffers: [AudioQueueBufferRef] = []
+    private var freeBufferIDs = Set<Int>()
+    private var queuedBufferFrames: [Int: Int] = [:]
+    private var jitterBuffer: AdaptivePCMJitterBuffer?
+    private var bytesPerFrame = 0
+    private var playbackFrameFrames = 0
+    private var startThresholdFrames = 0
+    private var queueTargetFrames = 0
+    private var resetThresholdFrames = 0
+    private var queuedFrames = 0
+    private var started = false
+    private var stopped = true
+    private var currentVolume: Float = 1
 
     func configure(sampleRate: Double, channels: Int, volume: Double) throws {
         let channelCount = max(1, min(channels, 2))
-        let outputSampleRate = AVAudioSession.sharedInstance().sampleRate
-        let playbackSampleRate = outputSampleRate > 0 ? outputSampleRate : sampleRate
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: playbackSampleRate,
-            channels: AVAudioChannelCount(channelCount),
-            interleaved: false
-        ) else {
-            throw MicListenError.malformedResponse("The stream audio format is not supported.")
-        }
-
-        let nextEngine = AVAudioEngine()
-        let nextRingBuffer = PCMFrameRingBuffer(
-            sourceSampleRate: sampleRate,
-            outputSampleRate: playbackSampleRate,
-            channels: channelCount
+        let nextBytesPerFrame = channelCount * MemoryLayout<Int16>.size
+        let nextPlaybackFrameFrames = max(Int((sampleRate * Self.bufferDuration).rounded()), 1)
+        var description = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: UInt32(nextBytesPerFrame),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(nextBytesPerFrame),
+            mChannelsPerFrame: UInt32(channelCount),
+            mBitsPerChannel: UInt32(MemoryLayout<Int16>.size * 8),
+            mReserved: 0
         )
-        let nextSourceNode = AVAudioSourceNode { _, _, frameCount, audioBufferList in
-            nextRingBuffer.render(frameCount: Int(frameCount), to: audioBufferList)
-            return noErr
+
+        var nextQueue: AudioQueueRef?
+        try checkAudioQueueStatus(
+            AudioQueueNewOutput(
+                &description,
+                micListenAudioQueueCallback,
+                Unmanaged.passUnretained(self).toOpaque(),
+                nil,
+                nil,
+                0,
+                &nextQueue
+            ),
+            operation: "create native audio output"
+        )
+        guard let nextQueue else {
+            throw MicListenError.malformedResponse("The native audio queue could not be created.")
         }
 
-        nextEngine.attach(nextSourceNode)
-        nextEngine.connect(nextSourceNode, to: nextEngine.mainMixerNode, format: format)
-        nextEngine.mainMixerNode.outputVolume = Float(min(max(volume, 0), 1))
-        nextEngine.prepare()
-        try nextEngine.start()
+        let clampedVolume = Float(min(max(volume, 0), 1))
+        do {
+            try checkAudioQueueStatus(
+                AudioQueueSetParameter(nextQueue, kAudioQueueParam_Volume, clampedVolume),
+                operation: "set native audio volume"
+            )
 
-        lock.withLock {
-            stopLocked()
-            engine = nextEngine
-            sourceNode = nextSourceNode
-            ringBuffer = nextRingBuffer
+            let nextJitterBuffer = try AdaptivePCMJitterBuffer(
+                frameFrames: nextPlaybackFrameFrames,
+                bytesPerFrame: nextBytesPerFrame
+            )
+            let bufferByteCapacity = nextPlaybackFrameFrames * nextBytesPerFrame
+            var nextBuffers: [AudioQueueBufferRef] = []
+            for _ in 0..<Self.bufferCount {
+                var buffer: AudioQueueBufferRef?
+                try checkAudioQueueStatus(
+                    AudioQueueAllocateBuffer(nextQueue, UInt32(bufferByteCapacity), &buffer),
+                    operation: "allocate native audio buffer"
+                )
+                if let buffer {
+                    nextBuffers.append(buffer)
+                }
+            }
+
+            stateQueue.sync {
+                stopLocked()
+                audioQueue = nextQueue
+                allBuffers = nextBuffers
+                freeBuffers = nextBuffers
+                freeBufferIDs = Set(nextBuffers.map(bufferID))
+                queuedBufferFrames.removeAll()
+                jitterBuffer = nextJitterBuffer
+                bytesPerFrame = nextBytesPerFrame
+                playbackFrameFrames = nextPlaybackFrameFrames
+                startThresholdFrames = max(Int(sampleRate * Self.startDelay), 2)
+                queueTargetFrames = max(Int(sampleRate * Self.queueTargetDelay), nextPlaybackFrameFrames)
+                resetThresholdFrames = max(Int(sampleRate * Self.resetDelay), nextPlaybackFrameFrames)
+                queuedFrames = 0
+                started = false
+                stopped = false
+                currentVolume = clampedVolume
+            }
+        } catch {
+            AudioQueueDispose(nextQueue, true)
+            throw error
         }
     }
 
     func push(_ data: Data) {
-        let buffer = lock.withLock { ringBuffer }
-        buffer?.push(data)
+        guard !data.isEmpty else {
+            return
+        }
+        stateQueue.async { [data] in
+            self.enqueue(data)
+        }
     }
 
     func setVolume(_ volume: Double) {
-        let activeEngine = lock.withLock { self.engine }
-        activeEngine?.mainMixerNode.outputVolume = Float(min(max(volume, 0), 1))
+        let clamped = Float(min(max(volume, 0), 1))
+        stateQueue.async {
+            self.currentVolume = clamped
+            if let audioQueue = self.audioQueue {
+                AudioQueueSetParameter(audioQueue, kAudioQueueParam_Volume, clamped)
+            }
+        }
     }
 
     func stop() {
-        lock.withLock {
+        stateQueue.sync {
+            stopped = true
             stopLocked()
         }
     }
 
-    private func stopLocked() {
-        engine?.stop()
-        if let engine, let sourceNode {
-            engine.detach(sourceNode)
+    func reclaimBuffer(_ buffer: AudioQueueBufferRef) {
+        stateQueue.async {
+            guard self.audioQueue != nil else {
+                return
+            }
+            let id = self.bufferID(buffer)
+            if let frames = self.queuedBufferFrames.removeValue(forKey: id) {
+                self.queuedFrames = max(0, self.queuedFrames - frames)
+            }
+            self.returnBuffer(buffer)
+            if let audioQueue = self.audioQueue {
+                self.pumpQueue(audioQueue)
+            }
+            if self.queuedFrames == 0 {
+                self.started = false
+            }
         }
-        ringBuffer = nil
-        sourceNode = nil
-        engine = nil
-    }
-}
-
-private final class PCMFrameRingBuffer: @unchecked Sendable {
-    private let channels: Int
-    private let capacity: Int
-    private let startThreshold: Int
-    private let trimThreshold: Int
-    private let trimTarget: Int
-    private let ratio: Double
-    private let lock = NSLock()
-
-    private var buffers: [[Float]]
-    private var readIndex = 0
-    private var writeIndex = 0
-    private var availableFrames = 0
-    private var phase = 0.0
-    private var started = false
-
-    init(sourceSampleRate: Double, outputSampleRate: Double, channels: Int) {
-        let framesPerSecond = max(1, Int(sourceSampleRate.rounded()))
-        self.channels = max(1, channels)
-        self.capacity = max(framesPerSecond * 2, 2_048)
-        self.startThreshold = max(Int(Double(framesPerSecond) * 0.03), 2)
-        self.trimThreshold = max(Int(Double(framesPerSecond) * 0.2), 2)
-        self.trimTarget = max(Int(ceil(Double(framesPerSecond) * 0.06)), 2)
-        self.ratio = sourceSampleRate / max(outputSampleRate, 1)
-        self.buffers = Array(repeating: Array(repeating: 0, count: capacity), count: self.channels)
     }
 
-    func push(_ data: Data) {
-        let frameByteCount = channels * MemoryLayout<Int16>.size
-        guard frameByteCount > 0, data.count >= frameByteCount else {
+    private func enqueue(_ data: Data) {
+        guard !stopped,
+              let audioQueue,
+              let jitterBuffer,
+              bytesPerFrame > 0 else {
             return
         }
 
-        data.withUnsafeBytes { rawBuffer in
-            guard let bytes = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
+        jitterBuffer.push(data)
+        if queuedFrames > resetThresholdFrames {
+            resetQueue(audioQueue)
+            jitterBuffer.reset()
+        }
+        pumpQueue(audioQueue)
+    }
+
+    private func pumpQueue(_ audioQueue: AudioQueueRef) {
+        guard let jitterBuffer, bytesPerFrame > 0, playbackFrameFrames > 0 else {
+            return
+        }
+
+        while !stopped, queuedFrames < queueTargetFrames, let buffer = checkoutBuffer() {
+            let shouldConcealMissingFrames = started
+            guard let frameData = jitterBuffer.popFrame(
+                allowConcealment: shouldConcealMissingFrames,
+                queuedApplicationFrames: queuedFrames
+            ) else {
+                returnBuffer(buffer)
+                break
+            }
+
+            let bytesToCopy = min(frameData.count, Int(buffer.pointee.mAudioDataBytesCapacity))
+            frameData.withUnsafeBytes { frameBuffer in
+                if let source = frameBuffer.baseAddress {
+                    memcpy(buffer.pointee.mAudioData, source, bytesToCopy)
+                }
+            }
+            buffer.pointee.mAudioDataByteSize = UInt32(bytesToCopy)
+
+            let status = AudioQueueEnqueueBuffer(audioQueue, buffer, 0, nil)
+            guard status == noErr else {
+                returnBuffer(buffer)
                 return
             }
-            let frameCount = rawBuffer.count / frameByteCount
-            lock.withLock {
-                for frame in 0..<frameCount {
-                    if availableFrames >= capacity - 1 {
-                        readIndex = (readIndex + 1) % capacity
-                        availableFrames -= 1
-                    }
 
-                    for channel in 0..<channels {
-                        let byteOffset = (frame * channels + channel) * MemoryLayout<Int16>.size
-                        let unsignedValue = UInt16(bytes[byteOffset]) | (UInt16(bytes[byteOffset + 1]) << 8)
-                        let signedValue = Int16(bitPattern: unsignedValue)
-                        buffers[channel][writeIndex] = Float(signedValue) / 32768
-                    }
-
-                    writeIndex = (writeIndex + 1) % capacity
-                    availableFrames += 1
-                }
-
-                if availableFrames > trimThreshold {
-                    let dropped = availableFrames - trimTarget
-                    readIndex = (readIndex + dropped) % capacity
-                    availableFrames = trimTarget
-                    phase = 0
-                }
-                if availableFrames >= startThreshold {
+            let id = bufferID(buffer)
+            let framesToCopy = bytesToCopy / bytesPerFrame
+            queuedBufferFrames[id] = framesToCopy
+            queuedFrames += framesToCopy
+            if !started, queuedFrames >= startThresholdFrames {
+                if AudioQueueStart(audioQueue, nil) == noErr {
                     started = true
                 }
             }
         }
     }
 
-    func render(frameCount: Int, to audioBufferList: UnsafeMutablePointer<AudioBufferList>) {
-        let outputBuffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
-        clear(outputBuffers)
-
-        lock.withLock {
-            guard started, availableFrames >= 2 else {
-                if availableFrames < 2 {
-                    started = false
-                }
-                return
-            }
-
-            if outputBuffers.count == 1, Int(outputBuffers[0].mNumberChannels) > 1 {
-                renderInterleaved(frameCount: frameCount, to: outputBuffers)
-            } else {
-                renderNonInterleaved(frameCount: frameCount, to: outputBuffers)
-            }
+    private func checkoutBuffer() -> AudioQueueBufferRef? {
+        guard let buffer = freeBuffers.popLast() else {
+            return nil
         }
+        freeBufferIDs.remove(bufferID(buffer))
+        return buffer
     }
 
-    private func renderNonInterleaved(
-        frameCount: Int,
-        to outputBuffers: UnsafeMutableAudioBufferListPointer
-    ) {
-        for frame in 0..<frameCount {
-            guard availableFrames >= 2 else {
-                started = false
-                break
-            }
-
-            let nextIndex = (readIndex + 1) % capacity
-            for outputIndex in 0..<outputBuffers.count {
-                guard let data = outputBuffers[outputIndex].mData else {
-                    continue
-                }
-                let samples = data.assumingMemoryBound(to: Float.self)
-                let sourceChannel = min(outputIndex, channels - 1)
-                let current = buffers[sourceChannel][readIndex]
-                let next = buffers[sourceChannel][nextIndex]
-                samples[frame] = current + (next - current) * Float(phase)
-            }
-
-            advancePhase()
-        }
-    }
-
-    private func renderInterleaved(
-        frameCount: Int,
-        to outputBuffers: UnsafeMutableAudioBufferListPointer
-    ) {
-        let outputChannelCount = Int(outputBuffers[0].mNumberChannels)
-        guard let data = outputBuffers[0].mData else {
+    private func returnBuffer(_ buffer: AudioQueueBufferRef) {
+        let id = bufferID(buffer)
+        guard !freeBufferIDs.contains(id) else {
             return
         }
-        let samples = data.assumingMemoryBound(to: Float.self)
+        freeBufferIDs.insert(id)
+        freeBuffers.append(buffer)
+    }
 
-        for frame in 0..<frameCount {
-            guard availableFrames >= 2 else {
-                started = false
-                break
+    private func resetQueue(_ audioQueue: AudioQueueRef) {
+        AudioQueueReset(audioQueue)
+        queuedFrames = 0
+        started = false
+        queuedBufferFrames.removeAll()
+        freeBuffers = allBuffers
+        freeBufferIDs = Set(allBuffers.map(bufferID))
+    }
+
+    private func stopLocked() {
+        if let audioQueue {
+            AudioQueueStop(audioQueue, true)
+            AudioQueueDispose(audioQueue, true)
+        }
+        audioQueue = nil
+        allBuffers.removeAll()
+        freeBuffers.removeAll()
+        freeBufferIDs.removeAll()
+        queuedBufferFrames.removeAll()
+        jitterBuffer = nil
+        bytesPerFrame = 0
+        playbackFrameFrames = 0
+        queueTargetFrames = 0
+        resetThresholdFrames = 0
+        queuedFrames = 0
+        started = false
+    }
+
+    private func bufferID(_ buffer: AudioQueueBufferRef) -> Int {
+        Int(bitPattern: buffer)
+    }
+
+    private func checkAudioQueueStatus(_ status: OSStatus, operation: String) throws {
+        guard status == noErr else {
+            throw MicListenError.network("Could not \(operation) (AudioQueue \(status)).")
+        }
+    }
+}
+
+private final class AdaptivePCMJitterBuffer {
+    private enum SpeexJitter {
+        static let ok: CInt = 0
+        static let missing: CInt = 1
+        static let insertion: CInt = 2
+        static let getAvailableCount: CInt = 3
+    }
+
+    private static let maximumRepeatedConcealmentFrames = 3
+
+    private let jitter: OpaquePointer
+    private let frameFrames: Int
+    private let frameByteCount: Int
+    private var inputCarry = Data()
+    private var sourceTimestamp: UInt32 = 0
+    private var sequence: UInt16 = 0
+    private var bufferedFrames = 0
+    private var lastPlaybackFrame: Data?
+    private var repeatedConcealmentFrames = 0
+
+    init(frameFrames: Int, bytesPerFrame: Int) throws {
+        guard frameFrames > 0, bytesPerFrame > 0 else {
+            throw MicListenError.malformedResponse("The stream audio format is not supported.")
+        }
+        guard let jitter = jitter_buffer_init(CInt(frameFrames)) else {
+            throw MicListenError.network("Could not create the adaptive audio jitter buffer.")
+        }
+        self.jitter = jitter
+        self.frameFrames = frameFrames
+        self.frameByteCount = frameFrames * bytesPerFrame
+    }
+
+    deinit {
+        jitter_buffer_destroy(jitter)
+    }
+
+    func push(_ data: Data) {
+        guard !data.isEmpty else {
+            return
+        }
+        inputCarry.append(data)
+        while inputCarry.count >= frameByteCount {
+            let frame = Data(inputCarry.prefix(frameByteCount))
+            inputCarry.removeFirst(frameByteCount)
+            putFrame(frame)
+        }
+        refreshBufferedFrames()
+    }
+
+    func popFrame(allowConcealment: Bool, queuedApplicationFrames: Int) -> Data? {
+        refreshBufferedFrames()
+        guard allowConcealment || bufferedFrames >= frameFrames else {
+            return nil
+        }
+
+        let remaining = UInt32(max(queuedApplicationFrames, 0))
+        jitter_buffer_remaining_span(jitter, remaining)
+
+        var output = [UInt8](repeating: 0, count: frameByteCount)
+        var returnedLength = 0
+        var status: CInt = SpeexJitter.missing
+        output.withUnsafeMutableBytes { outputBuffer in
+            guard let baseAddress = outputBuffer.bindMemory(to: CChar.self).baseAddress else {
+                return
             }
+            var packet = JitterBufferPacket(
+                data: baseAddress,
+                len: UInt32(frameByteCount),
+                timestamp: 0,
+                span: 0,
+                sequence: 0,
+                user_data: 0
+            )
+            var startOffset: Int32 = 0
+            status = jitter_buffer_get(jitter, &packet, Int32(frameFrames), &startOffset)
+            returnedLength = Int(packet.len)
+        }
+        jitter_buffer_tick(jitter)
+        refreshBufferedFrames()
 
-            let nextIndex = (readIndex + 1) % capacity
-            for outputChannel in 0..<outputChannelCount {
-                let sourceChannel = min(outputChannel, channels - 1)
-                let current = buffers[sourceChannel][readIndex]
-                let next = buffers[sourceChannel][nextIndex]
-                samples[frame * outputChannelCount + outputChannel] = current + (next - current) * Float(phase)
-            }
-
-            advancePhase()
+        switch status {
+        case SpeexJitter.ok:
+            repeatedConcealmentFrames = 0
+            let frame = normalizedFrame(from: output, byteCount: returnedLength)
+            lastPlaybackFrame = frame
+            return frame
+        case SpeexJitter.missing, SpeexJitter.insertion:
+            repeatedConcealmentFrames += 1
+            return concealmentFrame()
+        default:
+            return nil
         }
     }
 
-    private func advancePhase() {
-        phase += ratio
-        while phase >= 1 && availableFrames > 1 {
-            phase -= 1
-            readIndex = (readIndex + 1) % capacity
-            availableFrames -= 1
-        }
+    func reset() {
+        jitter_buffer_reset(jitter)
+        inputCarry.removeAll()
+        sourceTimestamp = 0
+        sequence = 0
+        bufferedFrames = 0
+        lastPlaybackFrame = nil
+        repeatedConcealmentFrames = 0
     }
 
-    private func clear(_ outputBuffers: UnsafeMutableAudioBufferListPointer) {
-        for index in 0..<outputBuffers.count {
-            guard let data = outputBuffers[index].mData else {
-                continue
+    private func putFrame(_ frame: Data) {
+        frame.withUnsafeBytes { frameBuffer in
+            guard let baseAddress = frameBuffer.bindMemory(to: CChar.self).baseAddress else {
+                return
             }
-            memset(data, 0, Int(outputBuffers[index].mDataByteSize))
+            var packet = JitterBufferPacket(
+                data: UnsafeMutablePointer(mutating: baseAddress),
+                len: UInt32(frame.count),
+                timestamp: sourceTimestamp,
+                span: UInt32(frameFrames),
+                sequence: sequence,
+                user_data: 0
+            )
+            jitter_buffer_put(jitter, &packet)
         }
+        sourceTimestamp &+= UInt32(frameFrames)
+        sequence &+= 1
+    }
+
+    private func normalizedFrame(from bytes: [UInt8], byteCount: Int) -> Data {
+        let validByteCount = min(max(byteCount, 0), frameByteCount)
+        var frame = Data(bytes.prefix(validByteCount))
+        if frame.count < frameByteCount {
+            frame.append(concealmentFrame().prefix(frameByteCount - frame.count))
+        }
+        return frame
+    }
+
+    private func concealmentFrame() -> Data {
+        if repeatedConcealmentFrames <= Self.maximumRepeatedConcealmentFrames,
+           let lastPlaybackFrame,
+           lastPlaybackFrame.count == frameByteCount {
+            return lastPlaybackFrame
+        }
+        return Data(repeating: 0, count: frameByteCount)
+    }
+
+    private func refreshBufferedFrames() {
+        var availablePacketCount: Int32 = 0
+        jitter_buffer_ctl(jitter, SpeexJitter.getAvailableCount, &availablePacketCount)
+        bufferedFrames = max(0, Int(availablePacketCount) * frameFrames)
     }
 }
 

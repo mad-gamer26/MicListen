@@ -1,0 +1,15 @@
+{
+  "originHash" : "4813e8dc5aa0ef3a607023a389adad522d6f6ab2db975d1589370184f0d11f97",
+  "pins" : [
+    {
+      "identity" : "cspeex",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sbooth/CSpeex.git",
+      "state" : {
+        "revision" : "ba33fd93d54d8e7fc93b8a1d27991e756bac7345",
+        "version" : "1.2.1"
+      }
+    }
+  ],
+  "version" : 3
+}
